@@ -1,0 +1,27 @@
+{
+    "1340943454934667345": {
+        "anti_link": false,
+        "anti_spam": false,
+        "spam_threshold": 5,
+        "spam_window": 5,
+        "anti_invites": false,
+        "anti_bad_words": true,
+        "anti_caps": false,
+        "caps_percentage": 70,
+        "caps_min_length": 10,
+        "anti_repeat": false,
+        "repeat_threshold": 5,
+        "anti_ghostping": false,
+        "anti_mass_mention": false,
+        "mass_mention_threshold": 5,
+        "auto_warn": true,
+        "warn_limit": 3,
+        "warn_action": "mute",
+        "mute_duration": 10,
+        "log_channel": null,
+        "ignored_roles": [],
+        "ignored_channels": [],
+        "whitelisted_links": [],
+        "filtered_words": []
+    }
+}
