@@ -1,0 +1,63 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Ender Bot | The Ultimate Multi-Tool</title>
+    <style>
+        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background: #23272a; color: #fff; margin: 0; padding: 0; }
+        .navbar { display: flex; justify-content: space-between; align-items: center; padding: 20px 50px; background: #1e2124; }
+        .logo { font-size: 24px; font-weight: bold; color: #5865F2; display: flex; align-items: center; gap: 10px; }
+        .nav-links a, .btn { padding: 10px 20px; text-decoration: none; border-radius: 5px; font-weight: bold; transition: 0.3s; }
+        .nav-links a { color: #b9bbbe; }
+        .nav-links a:hover { color: #fff; }
+        .btn-discord { background: #5865F2; color: white; }
+        .btn-discord:hover { background: #4752c4; }
+        .hero { text-align: center; padding: 100px 20px; background: linear-gradient(#1e2124, #23272a); }
+        .hero h1 { font-size: 48px; margin-bottom: 20px; }
+        .hero p { font-size: 18px; color: #b9bbbe; max-width: 600px; margin: 0 auto 40px auto; }
+        .cta-group { display: flex; justify-content: center; gap: 20px; }
+        .btn-secondary { background: #4f545c; color: white; }
+        .btn-secondary:hover { background: #686d73; }
+        .stats-container { display: flex; justify-content: center; gap: 50px; margin-top: 50px; }
+        .stat-card { background: #2f3136; padding: 20px 40px; border-radius: 8px; border: 1px solid #4f545c; }
+        .stat-card h3 { margin: 0; font-size: 32px; color: #5865F2; }
+        .stat-card p { margin: 5px 0 0 0; color: #b9bbbe; }
+    </style>
+</head>
+<body>
+
+<nav class="navbar">
+    <div class="logo">
+        <img src="https://assets-global.website-files.com/6257adef93867e50d84d30e2/636e0a6a49cf127bf92de1e2_icon_clyde_blurple_RGB.png" width="35" alt="Bot Logo">
+        Ender Bot
+    </div>
+    <div class="nav-links">
+        <a href="/dashboard">Dashboard Hub</a>
+        <a href="{{ invite_url }}" target="_blank" class="btn btn-discord">Invite Bot</a>
+    </div>
+</nav>
+
+<section class="hero">
+    <h1>Power Up Your Discord Community</h1>
+    <p>Ender bot brings instant setting cross-synchronization, seamless automated message dispatch pipelines, and custom web panels directly to your server staff.</p>
+    
+    <div class="cta-group">
+        <a href="{{ invite_url }}" target="_blank" class="btn btn-discord">Add to Discord</a>
+        <a href="/dashboard" class="btn btn-secondary">Login to Web Panel</a>
+    </div>
+
+    <div class="stats-container">
+        <div class="stat-card">
+            <h3>{{ stats.servers }}</h3>
+            <p>Active Guilds</p>
+        </div>
+        <div class="stat-card">
+            <h3>{{ stats.users }}</h3>
+            <p>Users Monitored</p>
+        </div>
+    </div>
+</section>
+
+</body>
+</html>
