@@ -1,5 +1,6 @@
 discord.py==2.3.2
 quart==0.19.4
-motor==3.3.2
+motor==3.6.0
+pymongo==4.8.0
 dnspython==2.6.1
-pydantic==2.6.1
+pydantic
