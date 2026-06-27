@@ -1,229 +1,200 @@
 import os
 import asyncio
-import aiohttp
+import logging
+from contextlib import asynccontextmanager
 import discord
-from discord.ext import commands
-from quart import Quart, render_template, request, jsonify, redirect, url_for, session
+from discord.ext import commands, tasks
+from fastapi import FastAPI, Request
+from fastapi.responses import HTMLResponse
+from fastapi.templating import Jinja2Templates
+import uvicorn
 from motor.motor_asyncio import AsyncIOMotorClient
+from dotenv import load_dotenv
 
-# ==============================================================================
-# 1. INITIALIZATION & APP CONFIGURATION
-# ==============================================================================
+# Setup Environment & Logging
+load_dotenv()
+logging.basicConfig(level=logging.INFO)
+log = logging.getLogger("EnderBot")
 
-class EnderBot(commands.Bot):
-    def __init__(self, db, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.db = db
-
-    async def setup_hook(self):
-        try:
-            await self.load_extension("cogs.settings")
-            print("Successfully loaded extension: cogs.settings")
-        except Exception as e:
-            print(f"Failed to load extension cogs.settings: {e}")
-
-app = Quart(__name__)
-app.config["PROVIDE_AUTOMATIC_OPTIONS"] = True
-# A secure secret key is required to use signed browser cookies ('session')
-app.secret_key = os.getenv("SECRET_KEY", "ender_bot_super_secret_session_key_123!")
-
-# Fetch Environment Variables
-TOKEN = os.getenv("DISCORD_TOKEN")
-CLIENT_ID = os.getenv("CLIENT_ID") 
-CLIENT_SECRET = os.getenv("CLIENT_SECRET")
+# =====================================================
+# 🗄️ DATABASE & BOT INITIALIZATION
+# =====================================================
 MONGO_URI = os.getenv("MONGO_URI")
-PORT = int(os.getenv("PORT", 5000))
+TOKEN = os.getenv("DISCORD_TOKEN")
 
-if not TOKEN or not MONGO_URI or not CLIENT_ID or not CLIENT_SECRET:
-    raise ValueError(
-        "CRITICAL ERROR: Missing configuration keys! "
-        "Ensure DISCORD_TOKEN, MONGO_URI, CLIENT_SECRET, and CLIENT_ID are added to Render's Environment Variables."
-    )
+# Global variables to pass around resources safely
+db_client = None
+db = None
 
-# Setup Database & Bot
-mongo_client = AsyncIOMotorClient(MONGO_URI)
-db = mongo_client["ender_bot_db"]
-
+# Discord Bot Setup with standard intents
 intents = discord.Intents.default()
 intents.message_content = True
-bot = EnderBot(db=db, command_prefix="!", intents=intents)
+intents.members = True
+bot = commands.Bot(command_prefix="!", intents=intents)
 
-# Global API endpoints for Discord OAuth2
-DISCORD_API_URL = "https://discord.com/api/v10"
+# =====================================================
+# 🔄 DYNAMIC STATUS LOOP TASK
+# =====================================================
+@tasks.loop(minutes=5)
+async def update_status():
+    """Background task that runs every 5 minutes to refresh bot statistics."""
+    if not bot.is_ready():
+        return
 
+    # Calculate global tracking metrics across all connected servers
+    total_servers = len(bot.guilds)
+    total_members = sum(guild.member_count for guild in bot.guilds if guild.member_count)
 
-# ==============================================================================
-# 2. DISCORD AUTHENTICATION & ROUTING LOGIC
-# ==============================================================================
-
-@app.route("/")
-async def index():
-    """Public Landing Page featuring dynamic server and tracking statistics."""
-    invite_url = f"https://discord.com/api/oauth2/authorize?client_id={CLIENT_ID}&permissions=8&scope=bot%20applications.commands"
-    stats = {
-        "servers": len(bot.guilds),
-        "users": sum(g.member_count for g in bot.guilds if g.member_count)
-    }
-    return await render_template("index.html", invite_url=invite_url, stats=stats, logged_in="user" in session)
-
-
-@app.route("/login")
-async def login():
-    """Redirects the client browser directly to Discord's secure authorization screen."""
-    # Build your exact redirect URI based on whether you are running locally or live on Render
-    root_url = request.host_url.replace("http://", "https://") if "onrender.com" in request.host else request.host_url
-    redirect_uri = f"{root_url}login/callback".rstrip("/")
+    status_text = f"over {total_servers} servers | {total_members} members"
     
-    # Requesting identity to see user details and guilds to read server management states
-    discord_login_url = (
-        f"https://discord.com/api/oauth2/authorize?client_id={CLIENT_ID}"
-        f"&redirect_uri={encode_uri(redirect_uri)}&response_type=code&scope=identify%20guilds"
+    await bot.change_presence(
+        activity=discord.Activity(
+            type=discord.ActivityType.watching,
+            name=status_text
+        )
     )
-    return redirect(discord_login_url)
+    log.info(f"🔄 Global presence updated: Watching {status_text}")       
 
-
-@app.route("/login/callback")
-async def login_callback():
-    """Receives the access code from Discord and swaps it for an authenticated User Token."""
-    code = request.args.get("code")
-    if not code:
-        return "Authentication cancelled or missing authorization code code.", 400
-
-    root_url = request.host_url.replace("http://", "https://") if "onrender.com" in request.host else request.host_url
-    redirect_uri = f"{root_url}login/callback".rstrip("/")
-
-    data = {
-        "client_id": CLIENT_ID,
-        "client_secret": CLIENT_SECRET,
-        "grant_type": "authorization_code",
-        "code": code,
-        "redirect_uri": redirect_uri
-    }
+# =====================================================
+# 🚀 FASTAPI ASYNC LIFESPAN MATRIX
+# =====================================================
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    global db_client, db
     
-    headers = {"Content-Type": "application/x-www-form-urlencoded"}
-
-    async with aiohttp.ClientSession() as client_session:
-        # 1. Swap authorization code for an API access token token
-        async with client_session.post(f"{DISCORD_API_URL}/oauth2/token", data=data, headers=headers) as resp:
-            token_data = await resp.get_json()
-            access_token = token_data.get("access_token")
-            
-        if not access_token:
-            return "Failed to retrieve access configurations from Discord backend.", 400
-
-        # 2. Fetch authenticated profile data mapping who logged in
-        auth_headers = {"Authorization": f"Bearer {access_token}"}
-        async with client_session.get(f"{DISCORD_API_URL}/users/@me", headers=auth_headers) as resp:
-            user_info = await resp.get_json()
-
-        # 3. Fetch all servers the logged-in user belongs to
-        async with client_session.get(f"{DISCORD_API_URL}/users/@me/guilds", headers=auth_headers) as resp:
-            user_guilds = await resp.get_json()
-
-    # Save details safely inside encrypted browser session memory
-    session["user"] = user_info
-    session["user_guilds"] = user_guilds
-
-    return redirect(url_for("dashboard_hub"))
-
-
-@app.route("/logout")
-async def logout():
-    """Clears the browser session logs completely."""
-    session.clear()
-    return redirect(url_for("index"))
-
-
-@app.route("/dashboard", methods=["GET"])
-async def dashboard_hub():
-    """2. Dashboard Hub: Automatically processes and displays the logged-in user's server list."""
-    if "user" not in session:
-        return redirect(url_for("login"))
-
-    invite_url = f"https://discord.com/api/oauth2/authorize?client_id={CLIENT_ID}&permissions=8&scope=bot%20applications.commands"
-    user_guilds = session.get("user_guilds", [])
+    # 1. Boot up Motor MongoDB Connection
+    log.info("Connecting to MongoDB Cluster...")
+    db_client = AsyncIOMotorClient(MONGO_URI)
+    db = db_client["discord_bot_db"]
     
-    processed_servers = []
-    for g in user_guilds:
-        # Filter: Only show servers where the user is either the Owner OR has Manage Server permissions (0x20)
-        permissions = int(g.get("permissions", 0))
-        is_admin = (permissions & 0x8) == 0x8 or (permissions & 0x20) == 0x20 or g.get("owner", False)
-        
-        if is_admin:
-            guild_id = int(g["id"])
-            # Auto-check if Ender bot is actively present inside this server right now
-            bot_present = bot.get_guild(guild_id) is not None
-            
-            processed_servers.append({
-                "id": guild_id,
-                "name": g["name"],
-                "bot_in_guild": bot_present
-            })
-
-    return await render_template("dashboard_hub.html", servers=processed_servers, invite_url=invite_url, user=session["user"])
-
-
-# ==============================================================================
-# 3. INDIVIDUAL GUILD PANELS & RUNNER Lifecycles
-# ==============================================================================
-
-@app.route("/dashboard/<int:guild_id>", methods=["GET"])
-async def guild_management(guild_id):
-    """3. Specific Server Configuration View."""
-    if "user" not in session:
-        return redirect(url_for("login"))
-
-    # Security Guard: Verify the user actually has access to manage this server ID
-    user_guilds = session.get("user_guilds", [])
-    if not any(int(g["id"]) == guild_id for g in user_guilds):
-        return "Access Denied: You do not have permissions to manage this guild.", 403
-
-    guild_config = await db.settings.find_one({"guild_id": guild_id})
-    prefix = guild_config.get("prefix", "!") if guild_config else "!"
+    # 2. Inject DB reference directly into the bot instance
+    bot.db = db
     
-    guild = bot.get_guild(guild_id)
-    guild_name = guild.name if guild else f"Discord Server ID: ({guild_id})"
-
-    return await render_template("dashboard.html", guild_id=guild_id, guild_name=guild_name, prefix=prefix)
-
-
-@app.route("/api/settings/<int:guild_id>", methods=["POST"])
-async def update_settings(guild_id):
-    if "user" not in session:
-        return jsonify({"error": "Unauthorized context access"}), 401
-
-    data = await request.get_json()
-    new_prefix = data.get("prefix")
-
-    if not new_prefix or len(new_prefix) > 5:
-        return jsonify({"error": "Invalid prefix configuration payload received."}), 400
-
-    await db.settings.update_one({"guild_id": guild_id}, {"$set": {"prefix": new_prefix}}, upsert=True)
-    
-    guild = bot.get_guild(guild_id)
-    if guild and guild.system_channel:
+    # 3. Load your Cogs array asynchronously
+    extensions = [
+        'cogs.moderation', 'cogs.mod_utils', 'cogs.config', 
+        'cogs.help', 'cogs.music', 'cogs.logging', 
+        'cogs.autorole', 'cogs.general'
+    ]
+    for ext in extensions:
         try:
-            await guild.system_channel.send(f"⚙️ **Configuration Alert:** Prefix updated via Web Dashboard to `{new_prefix}`")
-        except discord.Forbidden:
-            pass
+            await bot.load_extension(ext)
+            log.info(f"Loaded extension: {ext}")
+        except Exception as e:
+            log.error(f"Failed to load extension {ext}: {e}")
 
-    return jsonify({"success": True, "new_prefix": new_prefix})
+    # Start presence loops
+    update_status.start()
 
+    # 4. Launch the Discord Bot client loop task
+    bot_task = asyncio.create_task(bot.start(TOKEN))
+    log.info("Discord Bot background thread running.")
+    
+    yield # --- FastAPI runs here while background loops spin ---
+    
+    # 5. Shutdown Routine
+    log.info("System shutdown triggered. Safely closing connection paths...")
+    update_status.cancel()
+    await bot.close()
+    db_client.close()
+    bot_task.cancel()
 
-def encode_uri(text):
-    """Helper method to format redirect strings cleanly for Discord API."""
-    import urllib.parse
-    return urllib.parse.quote_plus(text)
+# =====================================================
+# 📡 APPLICATION INSTANTIATION & TEMPLATES
+# =====================================================
+# Fixed: Initialized before routes use decorators
+app = FastAPI(lifespan=lifespan, title="Ender Bot v2 Core API")
+templates = Jinja2Templates(directory="templates")
 
+# =====================================================
+# 🌐 WEB API & DASHBOARD ENDPOINTS
+# =====================================================
 
+@app.get("/", response_class=HTMLResponse)
+async def serve_dashboard(request: Request):
+    """Renders a live HTML dashboard reading directly from the active Discord connection."""
+    if not bot.is_ready():
+        return "<h1>Ender Bot is compiling network matrix structures. Refresh in 5 seconds...</h1>"
+
+    # Gather data from the live client cache arrays
+    guilds_data = []
+    total_users = 0
+    
+    for guild in bot.guilds:
+        total_users += guild.member_count if guild.member_count else 0
+        guilds_data.append({
+            "name": guild.name,
+            "id": guild.id,
+            "member_count": guild.member_count
+        })
+
+    # Render data straight into your Jinja2 template frame
+    return templates.TemplateResponse("dashboard.html", {
+        "request": request,
+        "bot_name": bot.user.name,
+        "latency": round(bot.latency * 1000),
+        "server_count": len(bot.guilds),
+        "user_count": total_users,
+        "guilds": guilds_data
+    })
+
+@app.get("/api/status")
+async def json_api_status():
+    """Alternative JSON endpoint for health checks and integrations."""
+    return {
+        "status": "online",
+        "bot_latency_ms": round(bot.latency * 1000) if bot.is_ready() else "offline",
+        "cached_guilds_count": len(bot.guilds) if bot.is_ready() else 0
+    }
+
+@app.get("/api/guild/{guild_id}/stats")
+async def get_guild_data(guild_id: int):
+    """API reading live from both Discord and your MongoDB cache simultaneously."""
+    if not bot.is_ready():
+        return {"error": "Discord client is initializing"}
+        
+    guild = bot.get_guild(guild_id)
+    if not guild:
+        return {"error": "Guild not found by bot instance"}
+        
+    config = await bot.db["guild_settings"].find_one({"guild_id": guild_id}) or {}
+    
+    return {
+        "name": guild.name,
+        "member_count": guild.member_count,
+        "anti_invite_filter": config.get("anti_invite", True),
+        "anti_link_filter": config.get("anti_link", False)
+    }
+
+# =====================================================
+# ⚙️ DISCORD GATEWAY EVENTS
+# =====================================================
 @bot.event
 async def on_ready():
-    print(f"🤖 Bot Instance Online: {bot.user.name}")
+    log.info(f"🟩 Discord Session established as: {bot.user.name} (ID: {bot.user.id})")
+    try:
+        synced = await bot.tree.sync()
+        log.info(f"🔄 Global tree synchronization complete. Synced {len(synced)} slash commands.")
+    except Exception as e:
+        log.error(f"❌ Failed to sync app tree commands: {e}")
 
-
-@app.before_serving
-async def start_bot_task():
-    asyncio.create_task(bot.start(TOKEN))
-
+# =====================================================
+# 🔌 EXECUTION ENTRYPOINT
+# =====================================================
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=PORT)
+    # Pterodactyl often passes the assigned port via 'SERVER_PORT' instead of 'PORT'
+    # This fallback sequence checks both before defaulting to 8080
+    allocated_port = os.getenv("SERVER_PORT") or os.getenv("PORT")
+    port = int(allocated_port) if allocated_port else 8080
+    
+    # Check if the panel provided a specific internal bind IP
+    bind_host = os.getenv("SERVER_IP", "0.0.0.0")
+
+    log.info(f"🚀 Launching FastAPI Web Infrastructure on {bind_host}:{port}")
+    
+    uvicorn.run(
+        "main:app", 
+        host=bind_host, 
+        port=port, 
+        log_level="info"
+    )
